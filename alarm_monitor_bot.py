@@ -20,11 +20,16 @@ SILENCE_MINUTE_PHOTO_PATH = "hvilina.png"
 CHECK_INTERVAL = 7 
 
 # Цільовий регіон (Ми моніторимо Київську область, як найкраще наближення для Броварів)
-TARGET_REGION_NAME_API = "Київська" # Назва регіону в цьому API
+# Новий API використовує ID, а не назви. ID Київської області = 8
+TARGET_REGION_ID_NEW = 8
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
-# ТИМЧАСОВИЙ URL: Публічний API, що не вимагає токена (використовується для обходу блокувань)
-ALARM_API_URL = "https://www.ukrainealarm.com/api/alarm/current"
+# НОВИЙ, СПОДІВАНО СТАБІЛЬНИЙ URL: Публічний API, що не вимагає токена
+ALARM_API_URL = "https://alarm.api.co.ua/alerts/current" 
+
+# Параметри для Хвилини мовчання
+KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
+SILENCE_TIME = dt_time(9, 0) 
 # --- КІНЕЦЬ КОНФІГУРАЦІЇ ---
 
 # Перевірка наявності змінних оточення
@@ -46,16 +51,12 @@ except Exception as e:
 current_alarm_state = None 
 last_silence_date = None 
 
-# Параметри для Хвилини мовчання
-KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
-SILENCE_TIME = dt_time(9, 0) 
-
 # --- ФУНКЦІЇ ---
 
 def get_alarm_status():
-    """Отримує поточний стан тривоги для Київської області з ТИМЧАСОВОГО ПУБЛІЧНОГО API."""
+    """Отримує поточний стан тривоги для Київської області з нового публічного API."""
     
-    # Додаємо User-Agent для імітації запиту від браузера та обходу можливих 403
+    # Додаємо User-Agent для імітації запиту від браузера
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36'
     }
@@ -65,10 +66,10 @@ def get_alarm_status():
         response.raise_for_status() 
         data = response.json()
         
-        # Логіка парсингу: шукаємо потрібну область в списку
+        # Логіка парсингу: шукаємо потрібну область за ID (8) у масиві даних
         is_alarm = any(
-            item.get('region') == TARGET_REGION_NAME_API 
-            for item in data.get('alarms', [])
+            item.get('id') == TARGET_REGION_ID_NEW and item.get('alarm') == 1
+            for item in data
         )
         
         return is_alarm
@@ -98,7 +99,7 @@ def send_photo_message(photo_path, caption, parse_mode='Markdown'):
     except telebot.apihelper.ApiTelegramException as e:
         # Критична помилка Telegram API
         if "Forbidden" in str(e):
-            logger.error("ПОМИЛКА TELEGRAM API 403: БОТ НЕ Є ЧЛЕНОМ/АДМІНІСТРАТОРОМ КАНАЛУ! Виконайте крок 1.")
+            logger.error("ПОМИЛКА TELEGRAM API 403: БОТ НЕ Є ЧЛЕНОМ/АДМІНІСТРАТОРОМ КАНАЛУ! Це потрібно виправити вручну.")
         else:
             logger.error(f"Помилка Telegram API: {e}")
         return False
