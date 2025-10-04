@@ -20,12 +20,12 @@ SILENCE_MINUTE_PHOTO_PATH = "hvilina.png"
 CHECK_INTERVAL = 7 
 
 # Цільовий регіон (Ми моніторимо Київську область, як найкраще наближення для Броварів)
-# Новий API використовує ID, а не назви. ID Київської області = 8
+# Новий API використовує ID, ID Київської області = 8
 TARGET_REGION_ID_NEW = 8
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
-# НОВИЙ, СПОДІВАНО СТАБІЛЬНИЙ URL: Публічний API, що не вимагає токена
-ALARM_API_URL = "https://alarm.api.co.ua/alerts/current" 
+# НОВИЙ, НАЙБІЛЬШ СТАБІЛЬНИЙ URL: Публічний API (використовується багатьма сервісами)
+ALARM_API_URL = "https://alerts.com.ua/api/alerts/all" 
 
 # Параметри для Хвилини мовчання
 KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
@@ -54,7 +54,7 @@ last_silence_date = None
 # --- ФУНКЦІЇ ---
 
 def get_alarm_status():
-    """Отримує поточний стан тривоги для Київської області з нового публічного API."""
+    """Отримує поточний стан тривоги для Київської області з НАЙСТАБІЛЬНІШОГО ПУБЛІЧНОГО API."""
     
     # Додаємо User-Agent для імітації запиту від браузера
     headers = {
@@ -67,6 +67,7 @@ def get_alarm_status():
         data = response.json()
         
         # Логіка парсингу: шукаємо потрібну область за ID (8) у масиві даних
+        # Структура даних: [{"id": 8, "title": "Київська область", "alarm": 1, ...}]
         is_alarm = any(
             item.get('id') == TARGET_REGION_ID_NEW and item.get('alarm') == 1
             for item in data
@@ -182,3 +183,4 @@ if __name__ == "__main__":
         logger.warning("Бот зупинено користувачем.")
     except Exception as e:
         logger.critical(f"Критична помилка виконання: {e}")
+        
