@@ -5,6 +5,7 @@ import logging
 import os
 from datetime import datetime, time as dt_time, timedelta
 import pytz 
+from bs4 import BeautifulSoup # Новий імпорт для парсингу HTML
 
 # --- КОНФІГУРАЦІЯ ПРОЄКТУ ---
 # Змінні оточення
@@ -19,13 +20,12 @@ SILENCE_MINUTE_PHOTO_PATH = "hvilina.png"
 # УВАГА: Інтервал перевірки 60 секунд (1 хвилина)
 CHECK_INTERVAL = 60 
 
-# Цільовий регіон (Ми моніторимо Київську область, як найкраще наближення для Броварів)
-# Новий API використовує ID. ID Київської області = 8
-TARGET_REGION_ID_NEW = 8
+# Цільовий регіон (Ми моніторимо Київську область)
+TARGET_REGION_NAME_HTML = "Київська" 
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
-# НОВИЙ, НАЙБІЛЬШ СТАБІЛЬНИЙ URL (Фінальна публічна спроба)
-ALARM_API_URL = "https://alerts.com.ua/api/alerts/all" 
+# ФІНАЛЬНИЙ URL: Веб-сторінка для прямого парсингу HTML
+ALARM_PAGE_URL = "https://map.ukrainealarm.com/" 
 
 # Параметри для Хвилини мовчання
 KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
@@ -53,31 +53,56 @@ last_silence_date = None
 # --- ФУНКЦІЇ ---
 
 def get_alarm_status():
-    """Отримує поточний стан тривоги для Київської області з нового публічного API."""
+    """Парсить HTML сторінки для визначення статусу тривоги в Київській області."""
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36'
     }
     
     try:
-        response = requests.get(ALARM_API_URL, headers=headers, timeout=10)
+        response = requests.get(ALARM_PAGE_URL, headers=headers, timeout=15)
         response.raise_for_status() 
-        data = response.json()
         
-        # Логіка парсингу: шукаємо потрібну область за ID (8) у масиві даних
-        # Структура даних: [{"id": 8, "title": "Київська область", "alarm": 1, ...}]
-        is_alarm = any(
-            item.get('id') == TARGET_REGION_ID_NEW and item.get('alarm') == 1
-            for item in data
-        )
+        # Використовуємо BeautifulSoup для парсингу HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        return is_alarm
+        # Шукаємо скрипт з даними тривоги
+        alarm_data_script = soup.find('script', id='alarm-status-data')
+        
+        if alarm_data_script:
+            # Дані зазвичай зберігаються у JSON форматі в текстовому вмісті тега
+            import json
+            data = json.loads(alarm_data_script.string)
+            
+            # Логіка парсингу: перевіряємо, чи є Київська область серед активних
+            is_alarm = any(
+                item.get('region') == TARGET_REGION_NAME_HTML and item.get('status') == 'alarm'
+                for item in data.get('regions', [])
+            )
+            
+            return is_alarm
+        
+        # Якщо скрипт не знайдено, пробуємо альтернативний метод (пошук за класом)
+        # На сторінці тривоги області зазвичай позначаються червоним
+        
+        # Пошук елемента, що вказує на тривогу в Київській області
+        region_div = soup.find('div', string=TARGET_REGION_NAME_HTML)
+        
+        if region_div and 'alarm-active' in region_div.get('class', []):
+            return True
+        
+        # Якщо нічого не знайдено, припускаємо, що тривоги немає
+        return False
         
     except requests.exceptions.RequestException as e:
-        logger.error(f"Помилка при запиті до API ({ALARM_API_URL}): {e}") 
-        # Повертаємо None, щоб не змінювати поточний стан при помилці
+        logger.error(f"Помилка при запиті (Web Scraping): {e}") 
+        return None
+    except Exception as e:
+        logger.error(f"Помилка парсингу HTML: {e}")
         return None
 
+
+# ... (Інші функції залишаються без змін) ...
 def send_photo_message(photo_path, caption, parse_mode='Markdown'):
     """Універсальна функція для надсилання фото з підписом."""
     try:
@@ -117,7 +142,7 @@ def check_and_post_silence_minute():
     if last_silence_date == today:
         return
     
-    target_time = datetime.combine(today, SILENCE_TIME, KYIV_TIMEZONE)
+    target_time = datetime.combine(today, dt_time(9, 0), KYIV_TIMEZONE)
     window_start = target_time
     window_end = target_time + timedelta(seconds=CHECK_INTERVAL * 2) 
     
@@ -180,4 +205,3 @@ if __name__ == "__main__":
         logger.warning("Бот зупинено користувачем.")
     except Exception as e:
         logger.critical(f"Критична помилка виконання: {e}")
-        
