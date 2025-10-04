@@ -16,16 +16,20 @@ ALARM_PHOTO_PATH = "airallert.png"
 ALL_CLEAR_PHOTO_PATH = "airallert2.png"
 SILENCE_MINUTE_PHOTO_PATH = "hvilina.png" 
 
-# УВАГА: Збільшення інтервалу для зменшення ризику блокування
-CHECK_INTERVAL = 30 # Інтервал перевірки API у секундах (30 секунд)
+# УВАГА: Інтервал перевірки 60 секунд (1 хвилина)
+CHECK_INTERVAL = 60 
 
-# Цільовий регіон (Київська область)
-TARGET_REGION_NAME_API = "Київська" 
+# Цільовий регіон (Ми моніторимо Київську область, як найкраще наближення для Броварів)
+# Новий API використовує ID. ID Київської області = 8
+TARGET_REGION_ID_NEW = 8
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
-# ФІНАЛЬНИЙ СТАБІЛЬНИЙ URL: Публічний API, що не вимагає токена
-# Цей API зазвичай використовується для відображення карт безпосередньо.
-ALARM_API_URL = "https://www.ukrainealarm.com/api/alarm/current"
+# НОВИЙ, НАЙБІЛЬШ СТАБІЛЬНИЙ URL (Фінальна публічна спроба)
+ALARM_API_URL = "https://alerts.com.ua/api/alerts/all" 
+
+# Параметри для Хвилини мовчання
+KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
+SILENCE_TIME = dt_time(9, 0) 
 # --- КІНЕЦЬ КОНФІГУРАЦІЇ ---
 
 # Перевірка наявності змінних оточення
@@ -46,14 +50,10 @@ except Exception as e:
 current_alarm_state = None 
 last_silence_date = None 
 
-# Параметри для Хвилини мовчання
-KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
-SILENCE_TIME = dt_time(9, 0) 
-
 # --- ФУНКЦІЇ ---
 
 def get_alarm_status():
-    """Отримує поточний стан тривоги, використовуючи публічний API з User-Agent."""
+    """Отримує поточний стан тривоги для Київської області з нового публічного API."""
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36'
@@ -64,10 +64,11 @@ def get_alarm_status():
         response.raise_for_status() 
         data = response.json()
         
-        # Логіка парсингу: шукаємо потрібну область в списку
+        # Логіка парсингу: шукаємо потрібну область за ID (8) у масиві даних
+        # Структура даних: [{"id": 8, "title": "Київська область", "alarm": 1, ...}]
         is_alarm = any(
-            item.get('region') == TARGET_REGION_NAME_API 
-            for item in data.get('alarms', [])
+            item.get('id') == TARGET_REGION_ID_NEW and item.get('alarm') == 1
+            for item in data
         )
         
         return is_alarm
@@ -179,3 +180,4 @@ if __name__ == "__main__":
         logger.warning("Бот зупинено користувачем.")
     except Exception as e:
         logger.critical(f"Критична помилка виконання: {e}")
+        
