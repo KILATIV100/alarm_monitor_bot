@@ -4,34 +4,31 @@ import time
 import logging
 import os
 from datetime import datetime, time as dt_time, timedelta
-import pytz # Для точної роботи з часовими поясами
+import pytz 
 
 # --- КОНФІГУРАЦІЯ ПРОЄКТУ ---
 # Змінні читаються з Environment Variables на Railway
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_DESTINATION = os.environ.get("CHANNEL_DESTINATION")
 
-# Шляхи до файлів зображень. Вони мають лежати поруч із цим скриптом.
+# Шляхи до файлів зображень.
 ALARM_PHOTO_PATH = "airallert.png"
 ALL_CLEAR_PHOTO_PATH = "airallert2.png"
 SILENCE_MINUTE_PHOTO_PATH = "hvilina.png" 
 
 # Параметри моніторингу
-CHECK_INTERVAL = 7 # Інтервал перевірки API у секундах
+CHECK_INTERVAL = 7 
 
-# Цільовий регіон (Броварський район)
-TARGET_AREA_ID = "251675276"
-TARGET_AREA_NAME = "Броварський район (Київська область)"
-ALARM_API_URL = "https://api.ukrainealarm.com/api/v3/alerts"
+# Цільовий регіон (Ми моніторимо Київську область, як найкраще наближення для Броварів)
+TARGET_REGION_NAME_API = "Київська" # Назва регіону в цьому API
+TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
-# Параметри для Хвилини мовчання
-KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') # Часовий пояс Києва
-SILENCE_TIME = dt_time(9, 0) # Рівно 09:00:00 за Києвом
+# ТИМЧАСОВИЙ URL: Публічний API, що не вимагає токена (використовується для обходу блокувань)
+ALARM_API_URL = "https://www.ukrainealarm.com/api/alarm/current"
 # --- КІНЕЦЬ КОНФІГУРАЦІЇ ---
 
 # Перевірка наявності змінних оточення
 if not BOT_TOKEN or not CHANNEL_DESTINATION:
-    # Виводимо помилку, якщо змінні не встановлені (або не читаються)
     raise ValueError("BOT_TOKEN або CHANNEL_DESTINATION не знайдено у змінних оточення!")
 
 # Налаштування логування
@@ -47,14 +44,18 @@ except Exception as e:
 
 # Змінні стану
 current_alarm_state = None 
-last_silence_date = None # Дата останньої публікації Хвилини мовчання
+last_silence_date = None 
+
+# Параметри для Хвилини мовчання
+KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
+SILENCE_TIME = dt_time(9, 0) 
 
 # --- ФУНКЦІЇ ---
 
 def get_alarm_status():
-    """Отримує поточний стан тривоги для цільового району, використовуючи User-Agent."""
+    """Отримує поточний стан тривоги для Київської області з ТИМЧАСОВОГО ПУБЛІЧНОГО API."""
     
-    # Додаємо User-Agent для імітації запиту від браузера і обходу 403 Forbidden
+    # Додаємо User-Agent для імітації запиту від браузера та обходу можливих 403
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36'
     }
@@ -64,16 +65,16 @@ def get_alarm_status():
         response.raise_for_status() 
         data = response.json()
         
-        # Перевірка наявності активної тривоги для цільового ID
+        # Логіка парсингу: шукаємо потрібну область в списку
         is_alarm = any(
-            item.get('alert_type') == 'air_raid' and 
-            item.get('location_uid') == TARGET_AREA_ID
-            for item in data
+            item.get('region') == TARGET_REGION_NAME_API 
+            for item in data.get('alarms', [])
         )
+        
         return is_alarm
         
     except requests.exceptions.RequestException as e:
-        logger.error(f"Помилка при запиті до API: {e}") 
+        logger.error(f"Помилка при запиті до API ({ALARM_API_URL}): {e}") 
         return None
 
 def send_photo_message(photo_path, caption, parse_mode='Markdown'):
@@ -95,27 +96,27 @@ def send_photo_message(photo_path, caption, parse_mode='Markdown'):
         return True
         
     except telebot.apihelper.ApiTelegramException as e:
-        logger.error(f"Помилка Telegram API (перевірте CHANNEL_DESTINATION та права бота): {e}")
+        # Критична помилка Telegram API
+        if "Forbidden" in str(e):
+            logger.error("ПОМИЛКА TELEGRAM API 403: БОТ НЕ Є ЧЛЕНОМ/АДМІНІСТРАТОРОМ КАНАЛУ! Виконайте крок 1.")
+        else:
+            logger.error(f"Помилка Telegram API: {e}")
+        return False
     except Exception as e:
         logger.error(f"Невідома помилка при надсиланні: {e}")
-    return False
+        return False
 
 def check_and_post_silence_minute():
     """Публікує Хвилину мовчання рівно о 9:00 за Києвом, лише один раз на день."""
     global last_silence_date
     
-    # Отримуємо поточний час у часовому поясі Києва
     now_kyiv = datetime.now(KYIV_TIMEZONE)
     today = now_kyiv.date()
     
-    # Перевірка: чи сьогодні вже постили?
     if last_silence_date == today:
         return
     
-    # Визначаємо точний момент 09:00:00 за Києвом
     target_time = datetime.combine(today, SILENCE_TIME, KYIV_TIMEZONE)
-    
-    # Створюємо невелике вікно перевірки для гарантованого спрацювання (09:00:00 + час одного циклу)
     window_start = target_time
     window_end = target_time + timedelta(seconds=CHECK_INTERVAL * 2) 
     
@@ -127,30 +128,28 @@ def check_and_post_silence_minute():
         success = send_photo_message(SILENCE_MINUTE_PHOTO_PATH, caption)
         
         if success:
-            last_silence_date = today # Оновлюємо дату, щоб уникнути повторної публікації
+            last_silence_date = today 
 
 
 def check_and_post_alarm(new_alarm_state):
     """Обробляє логіку зміни стану тривоги та публікує повідомлення."""
     global current_alarm_state
 
-    # Ініціалізація стану при першому запуску
     if current_alarm_state is None:
         current_alarm_state = new_alarm_state
         initial_status = "ТРИВОГА" if current_alarm_state else "ВІДБІЙ"
         logger.warning(f"Первинний стан встановлено: {initial_status}")
         return
         
-    # Публікація лише при зміні стану
     if new_alarm_state != current_alarm_state:
         
         if new_alarm_state is True:
             logger.warning("ЗМІНА СТАНУ: ТРИВОГА!")
-            caption = f"🚨 **УВАГА! ПОВІТРЯНА ТРИВОГА!** 🚨\n\nРайон: **{TARGET_AREA_NAME}**\n\n\n**Терміново прямуйте до найближчого укриття!**"
+            caption = f"🚨 **УВАГА! ПОВІТРЯНА ТРИВОГА!** 🚨\n\n**{TARGET_AREA_NAME}**\n\n\n**Терміново прямуйте до найближчого укриття!**"
             send_photo_message(ALARM_PHOTO_PATH, caption)
         else:
             logger.warning("ЗМІНА СТАНУ: ВІДБІЙ!")
-            caption = f"✅ **ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ** ✅\n\nРайон: **{TARGET_AREA_NAME}**\n\n\nМожна повертатися з укриття. Зберігайте спокій."
+            caption = f"✅ **ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ** ✅\n\n**{TARGET_AREA_NAME}**\n\n\nМожна повертатися з укриття. Зберігайте спокій."
             send_photo_message(ALL_CLEAR_PHOTO_PATH, caption)
         
         current_alarm_state = new_alarm_state
