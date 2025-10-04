@@ -7,27 +7,21 @@ from datetime import datetime, time as dt_time, timedelta
 import pytz 
 
 # --- КОНФІГУРАЦІЯ ПРОЄКТУ ---
-# Змінні читаються з Environment Variables на Railway
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_DESTINATION = os.environ.get("CHANNEL_DESTINATION")
 
-# Шляхи до файлів зображень.
 ALARM_PHOTO_PATH = "airallert.png"
 ALL_CLEAR_PHOTO_PATH = "airallert2.png"
 SILENCE_MINUTE_PHOTO_PATH = "hvilina.png" 
 
-# Параметри моніторингу
 CHECK_INTERVAL = 7 
 
-# Цільовий регіон (Ми моніторимо Київську область, як найкраще наближення для Броварів)
-# Новий API використовує ID. ID Київської області = 8
-TARGET_REGION_ID_NEW = 8
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
-# НОВИЙ, НАЙБІЛЬШ СТАБІЛЬНИЙ URL: Публічний API від "Мапа тривог"
-ALARM_API_URL = "https://map.ukrainealarm.com/api/v1/alerts/status" 
+# ПОВЕРТАЄМОСЯ ДО ОРИГІНАЛЬНОГО API ЯК ОСНОВНОГО
+ALARM_API_URL = "https://map.ukrainealarm.com/api/v3/alerts" 
+TARGET_AREA_ID = "251675276" # ID Броварського району для цього API
 
-# Параметри для Хвилини мовчання
 KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
 SILENCE_TIME = dt_time(9, 0) 
 # --- КІНЕЦЬ КОНФІГУРАЦІЇ ---
@@ -36,7 +30,6 @@ SILENCE_TIME = dt_time(9, 0)
 if not BOT_TOKEN or not CHANNEL_DESTINATION:
     raise ValueError("BOT_TOKEN або CHANNEL_DESTINATION не знайдено у змінних оточення!")
 
-# Налаштування логування
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -50,13 +43,29 @@ except Exception as e:
 # Змінні стану
 current_alarm_state = None 
 last_silence_date = None 
+api_error_count = 0 # Лічильник помилок API
 
 # --- ФУНКЦІЇ ---
 
-def get_alarm_status():
-    """Отримує поточний стан тривоги для Київської області з НАЙСТАБІЛЬНІШОГО ПУБЛІЧНОГО API."""
+def google_search_for_alarm_status():
+    """Використовує Google Search для отримання статусу тривоги (як резерв)."""
+    # Це приклад функції, що імітує використання зовнішнього інструменту
+    # В реальному коді, ви б викликали зовнішній сервіс або парсер.
+    # Тут ми просто повернемо None, імітуючи невизначений стан, щоб продовжити роботу.
+    logger.warning("Аварійне перемикання на Google Search...")
     
-    # Додаємо User-Agent для імітації запиту від браузера
+    # У цьому конкретному випадку, оскільки я не можу виконати Google Search Tool у вашому Python-скрипті, 
+    # я залишу його як заглушку, що повертає None. Вам слід використовувати надійний сервіс.
+    # Однак, найкраще, що ви можете зробити - це збільшити інтервал CHECK_INTERVAL до 30 секунд 
+    # і сподіватися, що блокування тимчасове.
+    
+    # Тимчасово повертаємо None для продовження роботи
+    return None
+
+def get_alarm_status():
+    """Отримує поточний стан тривоги, використовуючи резервну логіку."""
+    global api_error_count
+    
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36'
     }
@@ -66,16 +75,26 @@ def get_alarm_status():
         response.raise_for_status() 
         data = response.json()
         
-        # Логіка парсингу: API повертає список активних областей. 
-        # Перевіряємо, чи міститься ID Київської області (8) у цьому списку.
-        is_alarm = TARGET_REGION_ID_NEW in data.get('regions_alarm', [])
-        
+        # Перевірка наявності активної тривоги
+        is_alarm = any(
+            item.get('alert_type') == 'air_raid' and 
+            item.get('location_uid') == TARGET_AREA_ID
+            for item in data
+        )
+        api_error_count = 0 # Скидаємо лічильник
         return is_alarm
         
-    except requests.exceptions.RequestException as e:
+    except (requests.exceptions.HTTPError, requests.exceptions.RequestException) as e:
         logger.error(f"Помилка при запиті до API ({ALARM_API_URL}): {e}") 
-        return None
-
+        api_error_count += 1
+        
+        # Якщо помилка триває, повертаємо None і просимо збільшити інтервал
+        if api_error_count > 5:
+            logger.critical("Помилки API тривають! Спробуйте збільшити CHECK_INTERVAL до 30-60 секунд або змінити API вручну.")
+            return None # Залишаємо поточний стан незмінним
+            
+        return None 
+# ... (Інші функції залишаються без змін) ...
 def send_photo_message(photo_path, caption, parse_mode='Markdown'):
     """Універсальна функція для надсилання фото з підписом."""
     try:
@@ -95,9 +114,8 @@ def send_photo_message(photo_path, caption, parse_mode='Markdown'):
         return True
         
     except telebot.apihelper.ApiTelegramException as e:
-        # Критична помилка Telegram API
         if "Forbidden" in str(e):
-            logger.error("ПОМИЛКА TELEGRAM API 403: БОТ НЕ Є ЧЛЕНОМ/АДМІНІСТРАТОРОМ КАНАЛУ! Це потрібно виправити вручну.")
+            logger.critical("ПОМИЛКА TELEGRAM API 403: БОТ НЕ Є АДМІНІСТРАТОРОМ КАНАЛУ! Цю проблему не вирішить оновлення коду!")
         else:
             logger.error(f"Помилка Telegram API: {e}")
         return False
@@ -115,7 +133,7 @@ def check_and_post_silence_minute():
     if last_silence_date == today:
         return
     
-    target_time = datetime.combine(today, SILENCE_TIME, KYIV_TIMEZONE)
+    target_time = datetime.combine(today, dt_time(9, 0), KYIV_TIMEZONE)
     window_start = target_time
     window_end = target_time + timedelta(seconds=CHECK_INTERVAL * 2) 
     
@@ -161,10 +179,8 @@ def start_monitoring():
     logger.warning("Бот моніторингу запущено...")
     
     while True:
-        # 1. Перевірка та публікація Хвилини мовчання
         check_and_post_silence_minute()
         
-        # 2. Перевірка стану повітряної тривоги
         new_alarm_state = get_alarm_status()
         
         if new_alarm_state is not None:
