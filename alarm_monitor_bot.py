@@ -5,12 +5,18 @@ import logging
 import os
 from datetime import datetime, time as dt_time, timedelta
 import pytz 
-from bs4 import BeautifulSoup # Новий імпорт для парсингу HTML
+from telethon import TelegramClient, events
+import asyncio
 
 # --- КОНФІГУРАЦІЯ ПРОЄКТУ ---
-# Змінні оточення
+# Змінні оточення (для публікації)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_DESTINATION = os.environ.get("CHANNEL_DESTINATION")
+
+# Змінні оточення (для моніторингу Telethon)
+API_ID = os.environ.get("TELEGRAM_API_ID") 
+API_HASH = os.environ.get("TELEGRAM_API_HASH")
+TARGET_CHANNEL_USERNAME = os.environ.get("TARGET_CHANNEL_USERNAME") 
 
 # Шляхи до файлів зображень.
 ALARM_PHOTO_PATH = "airallert.png"
@@ -21,90 +27,62 @@ SILENCE_MINUTE_PHOTO_PATH = "hvilina.png"
 CHECK_INTERVAL = 60 
 
 # Цільовий регіон (Ми моніторимо Київську область)
-TARGET_REGION_NAME_HTML = "Київська" 
+TARGET_REGION_ID_NEW = "Київська"
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
-# ФІНАЛЬНИЙ URL: Веб-сторінка для прямого парсингу HTML
-ALARM_PAGE_URL = "https://map.ukrainealarm.com/" 
+# НОВИЙ СТАБІЛЬНИЙ URL: Імовірний API з alarmmap.online
+ALARM_API_URL = "https://map.ukrainealarm.com/api/v3/alerts" 
 
 # Параметри для Хвилини мовчання
 KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
 SILENCE_TIME = dt_time(9, 0) 
 # --- КІНЕЦЬ КОНФІГУРАЦІЇ ---
 
-# Перевірка наявності змінних оточення
-if not BOT_TOKEN or not CHANNEL_DESTINATION:
-    raise ValueError("BOT_TOKEN або CHANNEL_DESTINATION не знайдено у змінних оточення!")
+if not all([BOT_TOKEN, CHANNEL_DESTINATION, API_ID, API_HASH, TARGET_CHANNEL_USERNAME]):
+    raise ValueError("Одна або кілька критичних змінних оточення Telegram відсутні!")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Ініціалізація бота
-try:
-    bot = telebot.TeleBot(BOT_TOKEN)
-except Exception as e:
-    logger.critical(f"Помилка ініціалізації бота: {e}")
-    exit(1)
+# Ініціалізація клієнта Telethon та бота pyTelegramBotAPI
+client = TelegramClient('alarm_session', int(API_ID), API_HASH)
+bot_publisher = telebot.TeleBot(BOT_TOKEN)
 
 # Змінні стану
 current_alarm_state = None 
 last_silence_date = None 
 
-# --- ФУНКЦІЇ ---
+# --- ФУНКЦІЇ API (Резервний моніторинг) ---
 
 def get_alarm_status():
-    """Парсить HTML сторінки для визначення статусу тривоги в Київській області."""
+    """Отримує поточний стан тривоги для Київської області з API."""
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36'
     }
     
     try:
-        response = requests.get(ALARM_PAGE_URL, headers=headers, timeout=15)
+        response = requests.get(ALARM_API_URL, headers=headers, timeout=10)
         response.raise_for_status() 
+        data = response.json()
         
-        # Використовуємо BeautifulSoup для парсингу HTML
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # Логіка парсингу: шукаємо потрібну область
+        is_alarm = any(
+            item.get('regionName') == TARGET_REGION_ID_NEW and item.get('status') == 'alarm'
+            for item in data.get('regions', [])
+        )
         
-        # Шукаємо скрипт з даними тривоги
-        alarm_data_script = soup.find('script', id='alarm-status-data')
-        
-        if alarm_data_script:
-            # Дані зазвичай зберігаються у JSON форматі в текстовому вмісті тега
-            import json
-            data = json.loads(alarm_data_script.string)
-            
-            # Логіка парсингу: перевіряємо, чи є Київська область серед активних
-            is_alarm = any(
-                item.get('region') == TARGET_REGION_NAME_HTML and item.get('status') == 'alarm'
-                for item in data.get('regions', [])
-            )
-            
-            return is_alarm
-        
-        # Якщо скрипт не знайдено, пробуємо альтернативний метод (пошук за класом)
-        # На сторінці тривоги області зазвичай позначаються червоним
-        
-        # Пошук елемента, що вказує на тривогу в Київській області
-        region_div = soup.find('div', string=TARGET_REGION_NAME_HTML)
-        
-        if region_div and 'alarm-active' in region_div.get('class', []):
-            return True
-        
-        # Якщо нічого не знайдено, припускаємо, що тривоги немає
-        return False
+        return is_alarm
         
     except requests.exceptions.RequestException as e:
-        logger.error(f"Помилка при запиті (Web Scraping): {e}") 
-        return None
-    except Exception as e:
-        logger.error(f"Помилка парсингу HTML: {e}")
+        logger.error(f"Помилка при запиті до API ({ALARM_API_URL}): {e}") 
         return None
 
+# --- ФУНКЦІЇ ПУБЛІКАЦІЇ ---
 
-# ... (Інші функції залишаються без змін) ...
-def send_photo_message(photo_path, caption, parse_mode='Markdown'):
+def send_photo_message(bot, photo_path, caption, parse_mode='Markdown'):
     """Універсальна функція для надсилання фото з підписом."""
+    # ... (Ця функція залишається без змін) ...
     try:
         if not os.path.exists(photo_path):
             logger.error(f"Файл зображення не знайдено: {photo_path}. Надсилаємо текст.")
@@ -122,7 +100,6 @@ def send_photo_message(photo_path, caption, parse_mode='Markdown'):
         return True
         
     except telebot.apihelper.ApiTelegramException as e:
-        # Критична помилка Telegram API
         if "Forbidden" in str(e):
             logger.critical("❌ ПОМИЛКА TELEGRAM API 403: БОТ НЕ Є АДМІНІСТРАТОРОМ КАНАЛУ! Виправте це вручну.")
         else:
@@ -132,76 +109,108 @@ def send_photo_message(photo_path, caption, parse_mode='Markdown'):
         logger.error(f"Невідома помилка при надсиланні: {e}")
         return False
 
-def check_and_post_silence_minute():
-    """Публікує Хвилину мовчання рівно о 9:00 за Києвом, лише один раз на день."""
-    global last_silence_date
-    
-    now_kyiv = datetime.now(KYIV_TIMEZONE)
-    today = now_kyiv.date()
-    
-    if last_silence_date == today:
-        return
-    
-    target_time = datetime.combine(today, dt_time(9, 0), KYIV_TIMEZONE)
-    window_start = target_time
-    window_end = target_time + timedelta(seconds=CHECK_INTERVAL * 2) 
-    
-    if window_start <= now_kyiv < window_end:
-        logger.warning(f"Настав час Хвилини мовчання. Київський час: {now_kyiv.strftime('%H:%M:%S')}. Публікація...")
-        
-        caption = "🇺🇦 **ХВИЛИНА МОВЧАННЯ** 🇺🇦\n\nЩоденно вшановуємо пам'ять українців, які загинули внаслідок збройної агресії Російської Федерації."
-        
-        success = send_photo_message(SILENCE_MINUTE_PHOTO_PATH, caption)
-        
-        if success:
-            last_silence_date = today 
+# --- ЛОГІКА МОНІТОРИНГУ (TELETHON - Основна) ---
 
-
-def check_and_post_alarm(new_alarm_state):
-    """Обробляє логіку зміни стану тривоги та публікує повідомлення."""
+@client.on(events.NewMessage(chats=TARGET_CHANNEL_USERNAME))
+async def handle_new_alarm_message(event):
+    """Обробляє нові повідомлення з моніторингового каналу."""
     global current_alarm_state
-
-    if current_alarm_state is None:
-        current_alarm_state = new_alarm_state
-        initial_status = "ТРИВОГА" if current_alarm_state else "ВІДБІЙ"
-        logger.warning(f"Первинний стан встановлено: {initial_status}")
-        return
-        
-    if new_alarm_state != current_alarm_state:
-        
-        if new_alarm_state is True:
-            logger.warning("ЗМІНА СТАНУ: ТРИВОГА!")
-            caption = f"🚨 **УВАГА! ПОВІТРЯНА ТРИВОГА!** 🚨\n\n**{TARGET_AREA_NAME}**\n\n\n**Терміново прямуйте до найближчого укриття!**"
-            send_photo_message(ALARM_PHOTO_PATH, caption)
-        else:
-            logger.warning("ЗМІНА СТАНУ: ВІДБІЙ!")
-            caption = f"✅ **ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ** ✅\n\n**{TARGET_AREA_NAME}**\n\n\nМожна повертатися з укриття. Зберігайте спокій."
-            send_photo_message(ALL_CLEAR_PHOTO_PATH, caption)
-        
-        current_alarm_state = new_alarm_state
-
-
-# --- ГОЛОВНИЙ ЦИКЛ МОНІТОРИНГУ ---
-def start_monitoring():
-    """Запускає нескінченний цикл перевірки стану."""
     
-    logger.warning("Бот моніторингу запущено...")
+    text = event.message.to_dict().get('message', '').lower()
+    
+    # Критерії пошуку в повідомленні
+    is_target_region = any(kw.lower() in text for kw in KEYWORDS)
+    
+    if not is_target_region:
+        return 
+    
+    is_alarm_start = "повітряна тривога" in text or "оголошена" in text or "оголошена по київській" in text
+    is_all_clear = any(kw.lower() in text for kw in ALL_CLEAR_KEYWORDS)
+
+    if is_alarm_start and current_alarm_state is not True:
+        current_alarm_state = True
+        logger.warning("ЗМІНА СТАНУ: ТРИВОГА (через Telegram-моніторинг)!")
+        caption = f"🚨 **УВАГА! ПОВІТРЯНА ТРИВОГА!** 🚨\n\n**{TARGET_AREA_NAME}**\n\n\n**Терміново прямуйте до найближчого укриття!**"
+        send_photo_message(bot_publisher, ALARM_PHOTO_PATH, caption)
+        
+    elif is_all_clear and current_alarm_state is not False:
+        current_alarm_state = False
+        logger.warning("ЗМІНА СТАНУ: ВІДБІЙ (через Telegram-моніторинг)!")
+        caption = f"✅ **ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ** ✅\n\n**{TARGET_AREA_NAME}**\n\n\nМожна повертатися з укриття. Зберігайте спокій."
+        send_photo_message(bot_publisher, ALL_CLEAR_PHOTO_PATH, caption)
+
+
+# --- ЛОГІКА ТАЙМЕРА (ХВИЛИНА МОВЧАННЯ) ---
+
+async def check_silence_minute_task():
+    """Асинхронна задача для публікації Хвилини мовчання та API Fallback."""
+    global last_silence_date
+    global current_alarm_state
     
     while True:
-        check_and_post_silence_minute()
+        # 1. Логіка Хвилини мовчання
+        now_kyiv = datetime.now(KYIV_TIMEZONE)
+        today = now_kyiv.date()
         
+        # ... (Логіка Хвилини мовчання залишається без змін) ...
+        if last_silence_date != today:
+            target_time = datetime.combine(today, SILENCE_TIME, KYIV_TIMEZONE)
+            window_start = target_time
+            window_end = target_time + timedelta(seconds=CHECK_INTERVAL * 2) 
+            
+            if window_start <= now_kyiv < window_end:
+                logger.warning(f"Настав час Хвилини мовчання. Київський час: {now_kyiv.strftime('%H:%M:%S')}. Публікація...")
+                caption = "🇺🇦 **ХВИЛИНА МОВЧАННЯ** 🇺🇦\n\nЩоденно вшановуємо пам'ять українців, які загинули внаслідок збройної агресії Російської Федерації."
+                success = send_photo_message(bot_publisher, SILENCE_MINUTE_PHOTO_PATH, caption)
+                if success:
+                    last_silence_date = today 
+        
+        # 2. Логіка API Fallback (Запуск API, якщо Telethon з якихось причин пропустив повідомлення)
         new_alarm_state = get_alarm_status()
         
-        if new_alarm_state is not None:
-            check_and_post_alarm(new_alarm_state)
+        if new_alarm_state is not None and new_alarm_state != current_alarm_state:
+            
+            if current_alarm_state is None:
+                # Ініціалізація стану
+                current_alarm_state = new_alarm_state
+                logger.warning(f"Первинний стан встановлено API: {'Тривога' if current_alarm_state else 'Відбій'}")
+            elif new_alarm_state is True:
+                # Тривога
+                current_alarm_state = True
+                logger.warning("ЗМІНА СТАНУ: ТРИВОГА (через API Fallback)!")
+                caption = f"🚨 **УВАГА! ПОВІТРЯНА ТРИВОГА!** 🚨\n\n**{TARGET_AREA_NAME}**\n\n\n**Терміново прямуйте до найближчого укриття!**"
+                send_photo_message(bot_publisher, ALARM_PHOTO_PATH, caption)
+            else:
+                # Відбій
+                current_alarm_state = False
+                logger.warning("ЗМІНА СТАНУ: ВІДБІЙ (через API Fallback)!")
+                caption = f"✅ **ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ** ✅\n\n**{TARGET_AREA_NAME}**\n\n\nМожна повертатися з укриття. Зберігайте спокій."
+                send_photo_message(bot_publisher, ALL_CLEAR_PHOTO_PATH, caption)
 
-        time.sleep(CHECK_INTERVAL)
+
+        await asyncio.sleep(CHECK_INTERVAL)
 
 # --- ЗАПУСК ---
+async def main():
+    logger.warning("Бот моніторингу запущено...")
+    
+    try:
+        # Запуск Telethon клієнта
+        await client.start()
+    except Exception as e:
+        logger.critical(f"Помилка запуску Telethon клієнта. Перевірте API_ID/HASH: {e}")
+        return
+
+    # Запуск задачі для Хвилини мовчання та API Fallback
+    asyncio.create_task(check_silence_minute_task())
+    
+    # Запуск бота на постійну роботу
+    await client.run_until_disconnected()
+
 if __name__ == "__main__":
     try:
-        start_monitoring()
-    except KeyboardInterrupt:
-        logger.warning("Бот зупинено користувачем.")
+        # Для запуску Telethon потрібен асинхронний цикл
+        with client:
+            client.loop.run_until_complete(main())
     except Exception as e:
-        logger.critical(f"Критична помилка виконання: {e}")
+        logger.critical(f"Критична помибка виконання: {e}")
