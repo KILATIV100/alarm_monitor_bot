@@ -8,9 +8,9 @@ import pytz
 
 # --- КОНФІГУРАЦІЯ ПРОЄКТУ ---
 # Змінні оточення (З Railway)
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL_DESTINATION = os.environ.get("CHANNEL_DESTINATION")
-UKRAINE_ALARM_API_KEY = os.environ.get("UKRAINE_ALARM_API_KEY") # Ваш ключ
+BOT_TOKEN = str(os.environ.get("BOT_TOKEN", "")).strip()
+CHANNEL_DESTINATION = str(os.environ.get("CHANNEL_DESTINATION", "")).strip()
+UKRAINE_ALARM_API_KEY = str(os.environ.get("UKRAINE_ALARM_API_KEY", "")).strip()
 
 # Шляхи до файлів зображень (мають лежати поруч зі скриптом)
 ALARM_PHOTO_PATH = "airallert.png"
@@ -20,8 +20,7 @@ SILENCE_MINUTE_PHOTO_PATH = "hvilina.png"
 # Інтервал перевірки 60 секунд (1 хвилина)
 CHECK_INTERVAL = 60 
 
-# Цільовий регіон (Моніторинг за ID регіону)
-# ID Київської області = 11. Це найкраще наближення для Броварського району.
+# Цільовий регіон (Київська область - ID 11)
 TARGET_REGION_ID = "11"
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
@@ -30,12 +29,13 @@ ALARM_API_URL = "https://api.ukrainealarm.com/api/v3/alerts/status"
 
 # Параметри для Хвилини мовчання
 KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
-SILENCE_TIME = dt_time(9, 0) 
+SILENCE_TIME_TARGET = dt_time(9, 0) 
 # --- КІНЕЦЬ КОНФІГУРАЦІЇ ---
 
-# Перевірка наявності критичних змінних оточення
+# КРИТИЧНА ПЕРЕВІРКА ПРИ ЗАПУСКУ
 if not all([BOT_TOKEN, CHANNEL_DESTINATION, UKRAINE_ALARM_API_KEY]):
-    raise ValueError("Одна або кілька критичних змінних оточення відсутні! Перевірте BOT_TOKEN, CHANNEL_DESTINATION, UKRAINE_ALARM_API_KEY.")
+    logging.critical("❌ КРИТИЧНА ПОМИЛКА: Не встановлено одну з обов'язкових змінних оточення (BOT_TOKEN, CHANNEL_DESTINATION, UKRAINE_ALARM_API_KEY). Перевірте Railway!")
+    raise ValueError("Одна або кілька критичних змінних оточення відсутні!")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -54,9 +54,8 @@ last_silence_date = None
 # --- ФУНКЦІЇ API МОНІТОРИНГУ ---
 
 def get_alarm_status():
-    """Отримує поточний стан тривоги, використовуючи наданий API-ключ і правильний заголовок."""
+    """Отримує поточний стан тривоги, використовуючи наданий API-ключ."""
     
-    # ВИПРАВЛЕНО: Використовуємо заголовок 'Authorization' згідно з документацією API
     headers = {
         'Authorization': UKRAINE_ALARM_API_KEY,
         'User-Agent': 'Telegram Alarm Bot (Custom Monitoring)'
@@ -76,7 +75,7 @@ def get_alarm_status():
         return is_alarm
         
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ ПОМИЛКА API (401 Unauthorized або інша помилка): {e}") 
+        logger.error(f"❌ ПОМИЛКА API (Перевірте ключ або 401 Unauthorized): {e}") 
         return None
 
 # --- ФУНКЦІЇ ПУБЛІКАЦІЇ ---
@@ -119,19 +118,18 @@ def check_and_post_silence_minute():
     today = now_kyiv.date()
     
     # Діагностика часу
-    if now_kyiv.hour == 9 and now_kyiv.minute <= 5: 
+    if now_kyiv.hour == 8 or now_kyiv.hour == 9: 
         logger.info(f"Kyiv Time Check: {now_kyiv.strftime('%H:%M:%S')}. Last posted: {last_silence_date}")
         
     if last_silence_date == today:
         return
     
-    target_time = datetime.combine(today, SILENCE_TIME, KYIV_TIMEZONE)
+    # Створюємо потрібні часові точки
+    start_time_dt = datetime.combine(today, dt_time(8, 59), KYIV_TIMEZONE)
+    end_time_dt = datetime.combine(today, dt_time(9, 1), KYIV_TIMEZONE)
     
-    # Вікно публікації 5 хвилин (з 9:00:00 до 9:05:00)
-    window_start = target_time
-    window_end = target_time + timedelta(minutes=5) 
-    
-    if window_start <= now_kyiv < window_end:
+    # Вікно публікації: 8:59:00 до 9:01:00
+    if start_time_dt <= now_kyiv < end_time_dt:
         logger.warning(f"Настав час Хвилини мовчання. Київський час: {now_kyiv.strftime('%H:%M:%S')}. Публікація...")
         
         caption = "🇺🇦 **ХВИЛИНА МОВЧАННЯ** 🇺🇦\n\nЩоденно вшановуємо пам'ять українців, які загинули внаслідок збройної агресії Російської Федерації."
