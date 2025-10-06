@@ -25,7 +25,7 @@ CHECK_INTERVAL = 60
 TARGET_REGION_ID = "11"
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
-# API UkraineAlarm (Використовуємо ваш ключ)
+# API UkraineAlarm
 ALARM_API_URL = "https://api.ukrainealarm.com/api/v3/alerts/status" 
 
 # Параметри для Хвилини мовчання
@@ -42,7 +42,6 @@ logger = logging.getLogger(__name__)
 
 # Ініціалізація бота
 try:
-    # Використовуємо pyTelegramBotAPI
     bot = telebot.TeleBot(BOT_TOKEN)
 except Exception as e:
     logger.critical(f"Помилка ініціалізації бота: {e}")
@@ -55,11 +54,11 @@ last_silence_date = None
 # --- ФУНКЦІЇ API МОНІТОРИНГУ ---
 
 def get_alarm_status():
-    """Отримує поточний стан тривоги, використовуючи наданий API-ключ."""
+    """Отримує поточний стан тривоги, використовуючи наданий API-ключ і правильний заголовок."""
     
-    # Використовуємо X-API-Key для надійної авторизації (виправлення 401 Unauthorized)
+    # ВИПРАВЛЕНО: Використовуємо заголовок 'Authorization' згідно з документацією API
     headers = {
-        'X-API-Key': UKRAINE_ALARM_API_KEY,
+        'Authorization': UKRAINE_ALARM_API_KEY,
         'User-Agent': 'Telegram Alarm Bot (Custom Monitoring)'
     }
     
@@ -77,7 +76,7 @@ def get_alarm_status():
         return is_alarm
         
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ ПОМИЛКА API (Перевірте ключ та URL): {e}") 
+        logger.error(f"❌ ПОМИЛКА API (401 Unauthorized або інша помилка): {e}") 
         return None
 
 # --- ФУНКЦІЇ ПУБЛІКАЦІЇ ---
