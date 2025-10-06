@@ -36,7 +36,7 @@ SILENCE_TIME = dt_time(9, 0)
 
 # КРИТИЧНА ПЕРЕВІРКА ПРИ ЗАПУСКУ
 if not all([BOT_TOKEN, CHANNEL_DESTINATION, UKRAINE_ALARM_API_KEY]):
-    logging.critical("❌ КРИТИЧНА ПОМИЛКА: Не встановлено одну з обов'язкових змінних оточення (BOT_TOKEN, CHANNEL_DESTINATION, UKRAINE_ALARM_API_KEY). Перевірте Railway!")
+    logging.critical("❌ КРИТИЧНА ПОМИЛКА: Не встановлено одну з обов'язкових змінних оточення.")
     raise ValueError("Одна або кілька критичних змінних оточення відсутні!")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -53,7 +53,7 @@ except Exception as e:
 current_alarm_state = None 
 last_silence_date = None 
 
-# --- ФУНКЦІЇ API МОНІТОРИНГУ (ВИПРАВЛЕНО) ---
+# --- ФУНКЦІЇ API МОНІТОРИНГУ (ФІНАЛЬНЕ ВИПРАВЛЕННЯ) ---
 
 def get_alarm_status():
     """Отримує поточний стан тривоги, використовуючи наданий API-ключ."""
@@ -67,22 +67,28 @@ def get_alarm_status():
         response = requests.get(ALARM_API_URL, headers=headers, timeout=10)
         response.raise_for_status() 
         
-        # ВИПРАВЛЕННЯ: Додаємо try/except для обробки невалідної JSON відповіді
         try:
             data = response.json()
         except JSONDecodeError:
             logger.error(f"Помилка декодування JSON: Отримано невалідне тіло відповіді.")
             return None
         
-        # ВИПРАВЛЕННЯ: Перевіряємо, чи є data списком або словником перед ітерацією
-        if not isinstance(data, list):
-            logger.error("API повернув несподіваний формат даних (не список).")
+        # ВИПРАВЛЕННЯ ЛОГІКИ ПАРСИНГУ: Очікуємо словник (dict) з ключем 'states'
+        if not isinstance(data, dict):
+            logger.error("API повернув несподіваний формат даних (не словник).")
             return None
-            
+        
+        # Отримуємо список регіонів з ключа 'states' (з RegionsViewModel)
+        regions_list = data.get('states', [])
+        
+        if not regions_list:
+            logger.warning("API повернув порожній список регіонів або відсутній ключ 'states'.")
+            return None
+
         # Логіка парсингу: шукаємо активну тривогу ("activeAlerts")
         is_alarm = any(
             item.get('regionId') == TARGET_REGION_ID and item.get('activeAlerts')
-            for item in data
+            for item in regions_list
         )
         
         return is_alarm
