@@ -7,12 +7,12 @@ from datetime import datetime, time as dt_time, timedelta
 import pytz 
 
 # --- КОНФІГУРАЦІЯ ПРОЄКТУ ---
-# Змінні оточення (з Railway)
+# Змінні оточення (З Railway)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_DESTINATION = os.environ.get("CHANNEL_DESTINATION")
 UKRAINE_ALARM_API_KEY = os.environ.get("UKRAINE_ALARM_API_KEY") # Ваш ключ
 
-# Шляхи до файлів зображень.
+# Шляхи до файлів зображень (мають лежати поруч зі скриптом)
 ALARM_PHOTO_PATH = "airallert.png"
 ALL_CLEAR_PHOTO_PATH = "airallert2.png"
 SILENCE_MINUTE_PHOTO_PATH = "hvilina.png" 
@@ -21,7 +21,7 @@ SILENCE_MINUTE_PHOTO_PATH = "hvilina.png"
 CHECK_INTERVAL = 60 
 
 # Цільовий регіон (Моніторинг за ID регіону)
-# ID Київської області = 11
+# ID Київської області = 11. Це найкраще наближення для Броварського району.
 TARGET_REGION_ID = "11"
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
@@ -33,14 +33,16 @@ KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv')
 SILENCE_TIME = dt_time(9, 0) 
 # --- КІНЕЦЬ КОНФІГУРАЦІЇ ---
 
+# Перевірка наявності критичних змінних оточення
 if not all([BOT_TOKEN, CHANNEL_DESTINATION, UKRAINE_ALARM_API_KEY]):
-    raise ValueError("Одна або кілька критичних змінних оточення відсутні!")
+    raise ValueError("Одна або кілька критичних змінних оточення відсутні! Перевірте BOT_TOKEN, CHANNEL_DESTINATION, UKRAINE_ALARM_API_KEY.")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Ініціалізація бота
 try:
+    # Використовуємо pyTelegramBotAPI
     bot = telebot.TeleBot(BOT_TOKEN)
 except Exception as e:
     logger.critical(f"Помилка ініціалізації бота: {e}")
@@ -55,9 +57,10 @@ last_silence_date = None
 def get_alarm_status():
     """Отримує поточний стан тривоги, використовуючи наданий API-ключ."""
     
+    # Використовуємо X-API-Key для надійної авторизації (виправлення 401 Unauthorized)
     headers = {
-        'Authorization': f'Bearer {UKRAINE_ALARM_API_KEY}',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'X-API-Key': UKRAINE_ALARM_API_KEY,
+        'User-Agent': 'Telegram Alarm Bot (Custom Monitoring)'
     }
     
     try:
@@ -65,7 +68,7 @@ def get_alarm_status():
         response.raise_for_status() 
         data = response.json()
         
-        # Логіка парсингу на основі наданої схеми: перевіряємо, чи є "activeAlerts"
+        # Логіка парсингу: шукаємо активну тривогу ("activeAlerts")
         is_alarm = any(
             item.get('regionId') == TARGET_REGION_ID and item.get('activeAlerts')
             for item in data
@@ -74,21 +77,21 @@ def get_alarm_status():
         return is_alarm
         
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ ПОМИЛКА API: {e}") 
+        logger.error(f"❌ ПОМИЛКА API (Перевірте ключ та URL): {e}") 
         return None
 
 # --- ФУНКЦІЇ ПУБЛІКАЦІЇ ---
 
-def send_photo_message(bot, photo_path, caption, parse_mode='Markdown'):
+def send_photo_message(bot_instance, photo_path, caption, parse_mode='Markdown'):
     """Універсальна функція для надсилання фото з підписом."""
     try:
         if not os.path.exists(photo_path):
             logger.error(f"Файл зображення не знайдено: {photo_path}. Надсилаємо текст.")
-            bot.send_message(CHANNEL_DESTINATION, caption, parse_mode=parse_mode)
+            bot_instance.send_message(CHANNEL_DESTINATION, caption, parse_mode=parse_mode)
             return True
             
         with open(photo_path, 'rb') as photo:
-            bot.send_photo(
+            bot_instance.send_photo(
                 CHANNEL_DESTINATION, 
                 photo,
                 caption=caption,
@@ -99,7 +102,7 @@ def send_photo_message(bot, photo_path, caption, parse_mode='Markdown'):
         
     except telebot.apihelper.ApiTelegramException as e:
         if "Forbidden" in str(e):
-            logger.critical("❌ ПОМИЛКА TELEGRAM API 403: БОТ НЕ Є АДМІНІСТРАТОРОМ КАНАЛУ! Виправте це вручну.")
+            logger.critical("❌ ПОМИЛКА TELEGRAM API 403: БОТ НЕ Є АДМІНІСТРАТОРОМ КАНАЛУ! ВИПРАВТЕ ЦЕ ВРУЧНУ.")
         else:
             logger.error(f"Помилка Telegram API: {e}")
         return False
@@ -107,7 +110,7 @@ def send_photo_message(bot, photo_path, caption, parse_mode='Markdown'):
         logger.error(f"Невідома помилка при надсиланні: {e}")
         return False
 
-# --- ЛОГІКА ХВИЛИНИ МОВЧАННЯ (ОНОВЛЕНА) ---
+# --- ЛОГІКА ХВИЛИНИ МОВЧАННЯ ---
 
 def check_and_post_silence_minute():
     """Публікує Хвилину мовчання рівно о 9:00 за Києвом, лише один раз на день."""
@@ -116,7 +119,7 @@ def check_and_post_silence_minute():
     now_kyiv = datetime.now(KYIV_TIMEZONE)
     today = now_kyiv.date()
     
-    # Виводимо час у лог для діагностики
+    # Діагностика часу
     if now_kyiv.hour == 9 and now_kyiv.minute <= 5: 
         logger.info(f"Kyiv Time Check: {now_kyiv.strftime('%H:%M:%S')}. Last posted: {last_silence_date}")
         
@@ -125,9 +128,9 @@ def check_and_post_silence_minute():
     
     target_time = datetime.combine(today, SILENCE_TIME, KYIV_TIMEZONE)
     
-    # Встановлюємо ширше вікно: з 9:00:00 до 9:05:00, щоб компенсувати затримку сервера
+    # Вікно публікації 5 хвилин (з 9:00:00 до 9:05:00)
     window_start = target_time
-    window_end = target_time + timedelta(minutes=5) # Вікно 5 хвилин
+    window_end = target_time + timedelta(minutes=5) 
     
     if window_start <= now_kyiv < window_end:
         logger.warning(f"Настав час Хвилини мовчання. Київський час: {now_kyiv.strftime('%H:%M:%S')}. Публікація...")
