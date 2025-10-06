@@ -5,6 +5,8 @@ import logging
 import os
 from datetime import datetime, time as dt_time, timedelta
 import pytz 
+import json
+from json.decoder import JSONDecodeError
 
 # --- КОНФІГУРАЦІЯ ПРОЄКТУ ---
 # Змінні оточення (З Railway)
@@ -29,7 +31,7 @@ ALARM_API_URL = "https://api.ukrainealarm.com/api/v3/alerts/status"
 
 # Параметри для Хвилини мовчання
 KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
-SILENCE_TIME_TARGET = dt_time(9, 0) 
+SILENCE_TIME = dt_time(9, 0) 
 # --- КІНЕЦЬ КОНФІГУРАЦІЇ ---
 
 # КРИТИЧНА ПЕРЕВІРКА ПРИ ЗАПУСКУ
@@ -51,7 +53,7 @@ except Exception as e:
 current_alarm_state = None 
 last_silence_date = None 
 
-# --- ФУНКЦІЇ API МОНІТОРИНГУ ---
+# --- ФУНКЦІЇ API МОНІТОРИНГУ (ВИПРАВЛЕНО) ---
 
 def get_alarm_status():
     """Отримує поточний стан тривоги, використовуючи наданий API-ключ."""
@@ -64,8 +66,19 @@ def get_alarm_status():
     try:
         response = requests.get(ALARM_API_URL, headers=headers, timeout=10)
         response.raise_for_status() 
-        data = response.json()
         
+        # ВИПРАВЛЕННЯ: Додаємо try/except для обробки невалідної JSON відповіді
+        try:
+            data = response.json()
+        except JSONDecodeError:
+            logger.error(f"Помилка декодування JSON: Отримано невалідне тіло відповіді.")
+            return None
+        
+        # ВИПРАВЛЕННЯ: Перевіряємо, чи є data списком або словником перед ітерацією
+        if not isinstance(data, list):
+            logger.error("API повернув несподіваний формат даних (не список).")
+            return None
+            
         # Логіка парсингу: шукаємо активну тривогу ("activeAlerts")
         is_alarm = any(
             item.get('regionId') == TARGET_REGION_ID and item.get('activeAlerts')
@@ -124,11 +137,12 @@ def check_and_post_silence_minute():
     if last_silence_date == today:
         return
     
-    # Створюємо потрібні часові точки
+    target_time = datetime.combine(today, SILENCE_TIME, KYIV_TIMEZONE)
+    
+    # Вікно публікації: 8:59:00 до 9:01:00
     start_time_dt = datetime.combine(today, dt_time(8, 59), KYIV_TIMEZONE)
     end_time_dt = datetime.combine(today, dt_time(9, 1), KYIV_TIMEZONE)
     
-    # Вікно публікації: 8:59:00 до 9:01:00
     if start_time_dt <= now_kyiv < end_time_dt:
         logger.warning(f"Настав час Хвилини мовчання. Київський час: {now_kyiv.strftime('%H:%M:%S')}. Публікація...")
         
