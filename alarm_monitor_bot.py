@@ -19,7 +19,7 @@ ALARM_PHOTO_PATH = "airallert.png"
 ALL_CLEAR_PHOTO_PATH = "airallert2.png"
 SILENCE_MINUTE_PHOTO_PATH = "hvilina.png" 
 
-# Інтервал перевірки 10 секунд
+# Інтервал перевірки 70 секунд
 CHECK_INTERVAL = 70 
 
 # Цільовий регіон (Бровари - ID 684) - Виправлено на районний/ОТГ рівень
