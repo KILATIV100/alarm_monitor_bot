@@ -1,1 +1,1 @@
-web: python alarm_monitor_bot.py
+worker: python alarm_monitor_bot.py
