@@ -26,7 +26,7 @@ CHECK_INTERVAL = 10
 TARGET_REGION_ID = "11"
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
-# ФІНАЛЬНО ВИПРАВЛЕНО: Правильний Endpoint для отримання стану
+# API UkraineAlarm (Використовуємо офіційну кінцеву точку)
 ALARM_API_URL = "https://api.ukrainealarm.com/api/v3/alerts/state" 
 
 # Параметри для Хвилини мовчання
@@ -53,12 +53,11 @@ except Exception as e:
 current_alarm_state = None 
 last_silence_date = None 
 
-# --- ФУНКЦІЇ API МОНІТОРИНГУ (ФІНАЛЬНО ВИПРАВЛЕНО) ---
+# --- ФУНКЦІЇ API МОНІТОРИНГУ ---
 
 def get_alarm_status():
     """Отримує поточний стан тривоги, використовуючи наданий API-ключ."""
     
-    # ФІНАЛЬНО ПРАВИЛЬНИЙ ЗАГОЛОВОК ЗГІДНО SWAGGER
     headers = {
         'Authorization': UKRAINE_ALARM_API_KEY,
         'User-Agent': 'Telegram Alarm Bot (Custom Monitoring)'
@@ -67,7 +66,7 @@ def get_alarm_status():
     try:
         response = requests.get(ALARM_API_URL, headers=headers, timeout=10)
         
-        # Обробляємо помилки авторизації
+        # Обробляємо помилку 401 Unauthorized
         if response.status_code == 401:
             logger.critical("❌ КЛЮЧ НЕ ПРАЦЮЄ (401 Unauthorized): Повертаємо Відбій. Необхідна заміна ключа.")
             return False 
@@ -80,14 +79,18 @@ def get_alarm_status():
             logger.error(f"Помилка декодування JSON.")
             return None
         
-        # Очікуємо словник, шукаємо регіони у властивості 'states'
-        if not isinstance(data, dict):
-            logger.error("API повернув несподіваний формат даних (не словник).")
+        # ВИПРАВЛЕНО: Додано перевірку, щоб 'data' не була порожнім об'єктом
+        if not data or not isinstance(data, dict):
+            logger.warning("API повернув несподіваний/порожній формат даних.")
             return None
         
-        # Впевнено отримуємо список регіонів зі схеми RegionsViewModel
+        # Отримуємо список регіонів з ключа 'states' (якщо його немає, отримуємо порожній список)
         regions_list = data.get('states', [])
         
+        if not regions_list:
+            logger.warning("API повернув порожній список регіонів (states).")
+            return False
+
         # Логіка парсингу: шукаємо активну тривогу ("activeAlerts")
         is_alarm = any(
             item.get('regionId') == TARGET_REGION_ID and item.get('activeAlerts') is not None and len(item.get('activeAlerts', [])) > 0
@@ -100,7 +103,7 @@ def get_alarm_status():
         logger.error(f"❌ ПОМИЛКА API (Збій з'єднання або інше): {e}") 
         return None
 
-# --- ФУНКЦІЇ ПУБЛІКАЦІЇ (без змін) ---
+# --- ФУНКЦІЇ ПУБЛІКАЦІЇ ---
 
 def send_photo_message(bot_instance, photo_path, caption, parse_mode='Markdown'):
     """Універсальна функція для надсилання фото з підписом."""
