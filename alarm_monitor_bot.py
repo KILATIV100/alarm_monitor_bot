@@ -3,7 +3,7 @@ import requests
 import time
 import logging
 import os
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, time as dt_time
 import pytz 
 import json
 from json.decoder import JSONDecodeError
@@ -12,18 +12,21 @@ from json.decoder import JSONDecodeError
 # Змінні оточення (З Railway)
 BOT_TOKEN = str(os.environ.get("BOT_TOKEN", "")).strip()
 CHANNEL_DESTINATION = str(os.environ.get("CHANNEL_DESTINATION", "")).strip()
-UKRAINE_ALARM_API_KEY = str(os.environ.get("UKRAINE_ALARM_API_KEY", "")).strip()
+
+# !!! ТИМЧАСОВЕ ПРЯМЕ ВСТАВЛЕННЯ КЛЮЧА ДЛЯ ТЕСТУВАННЯ 401 ПОМИЛКИ !!!
+# ПІСЛЯ УСПІШНОГО ЗАПУСКУ ПОВЕРНІТЬСЯ ДО: UKRAINE_ALARM_API_KEY = str(os.environ.get("UKRAINE_ALARM_API_KEY", "")).strip()
+UKRAINE_ALARM_API_KEY = "118e666b:a5a32d4802308811d9c65d9337690490"
 
 # Шляхи до файлів зображень 
 ALARM_PHOTO_PATH = "airallert.png"
 ALL_CLEAR_PHOTO_PATH = "airallert2.png"
 SILENCE_MINUTE_PHOTO_PATH = "hvilina.png" 
 
-# Інтервал перевірки 70 секунд
-CHECK_INTERVAL = 70 
+# Інтервал перевірки 10 секунд
+CHECK_INTERVAL = 10 
 
-# Цільовий регіон (Бровари - ID 684) - Виправлено на районний/ОТГ рівень
-TARGET_BROVARY_ID = "684" # Новий ID для прямого запиту
+# Цільовий регіон (Бровари - ID 684) - Оптимізовано для точнішого моніторингу
+TARGET_BROVARY_ID = "684" 
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
 # API UkraineAlarm - Змінено на запит для конкретного регіону (Бровари - 684)
@@ -53,13 +56,16 @@ except Exception as e:
 current_alarm_state = None 
 last_silence_date = None 
 
-# --- ФУНКЦІЇ API МОНІТОРИНГУ (ВИПРАВЛЕНО АВТОРИЗАЦІЮ ТА ENDPOINT) ---
+# --- ФУНКЦІЇ API МОНІТОРИНГУ (ФІНАЛЬНЕ ВИПРАВЛЕННЯ АВТОРИЗАЦІЇ ТА ENDPOINT) ---
 
 def get_alarm_status():
-    """Отримує поточний стан тривоги для Броварів, використовуючи наданий API-ключ з префіксом Bearer."""
+    """Отримує поточний стан тривоги для Броварів (ID 684)."""
+    
+    # Гарантуємо, що ключ для заголовка чистий
+    key_for_header = UKRAINE_ALARM_API_KEY.strip()
     
     headers = {
-        'Authorization': f'Bearer {UKRAINE_ALARM_API_KEY}',
+        'Authorization': f'Bearer {key_for_header}',
         'User-Agent': 'Telegram Alarm Bot (Custom Monitoring)'
     }
     
@@ -69,8 +75,9 @@ def get_alarm_status():
         
         # Обробляємо помилки авторизації
         if response.status_code == 401:
-            logger.critical("❌ КЛЮЧ НЕ ПРАЦЮЄ (401 Unauthorized): Повертаємо Відбій. Необхідна заміна ключа.")
-            return False 
+            logger.critical("❌ КЛЮЧ НЕ ПРАЦЮЄ (401 Unauthorized): Повертаємо None. Необхідна заміна ключа.")
+            # Повертаємо None, щоб не змінювати стан на Відбій при помилці авторизації
+            return None 
         
         response.raise_for_status() 
         
@@ -80,7 +87,7 @@ def get_alarm_status():
             logger.error(f"Помилка декодування JSON.")
             return None
         
-        # Нова логіка: endpoint alerts/{regionId} повертає список активних тривог.
+        # Нова логіка для endpoint'а alerts/{regionId}: повертає список активних тривог.
         # Якщо список не пустий (len(data) > 0) - є тривога.
         if not isinstance(data, list):
              logger.warning("API повернув несподіваний/порожній формат даних для alerts/{regionId}.")
@@ -94,9 +101,8 @@ def get_alarm_status():
         logger.error(f"❌ ПОМИЛКА API (Збій з'єднання або інше): {e}") 
         return None
 
-# (Усі інші функції - send_photo_message, check_and_post_silence_minute, check_and_post_alarm, start_monitoring - залишаються без змін)
-
 # --- ФУНКЦІЇ ПУБЛІКАЦІЇ (без змін) ---
+
 def send_photo_message(bot_instance, photo_path, caption, parse_mode='Markdown'):
     """Універсальна функція для надсилання фото з підписом."""
     try:
@@ -140,7 +146,7 @@ def check_and_post_silence_minute():
     if last_silence_date == today:
         return
     
-    target_time = datetime.combine(today, SILENCE_TIME, KYIV_TIMEZONE)
+    # target_time = datetime.combine(today, SILENCE_TIME, KYIV_TIMEZONE) # Не використовується, можна видалити
     
     # Вікно публікації: 8:59:00 до 9:01:00
     start_time_dt = datetime.combine(today, dt_time(8, 59), KYIV_TIMEZONE)
