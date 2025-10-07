@@ -1,4 +1,4 @@
-import telebotяяяя
+import telebot
 import requests
 import time
 import logging
@@ -14,7 +14,7 @@ BOT_TOKEN = str(os.environ.get("BOT_TOKEN", "")).strip()
 CHANNEL_DESTINATION = str(os.environ.get("CHANNEL_DESTINATION", "")).strip()
 UKRAINE_ALARM_API_KEY = str(os.environ.get("UKRAINE_ALARM_API_KEY", "")).strip()
 
-# Шляхи до файлів зображень (мають лежати поруч зі скриптом)
+# Шляхи до файлів зображень 
 ALARM_PHOTO_PATH = "airallert.png"
 ALL_CLEAR_PHOTO_PATH = "airallert2.png"
 SILENCE_MINUTE_PHOTO_PATH = "hvilina.png" 
@@ -26,8 +26,8 @@ CHECK_INTERVAL = 10
 TARGET_REGION_ID = "11"
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
-# API UkraineAlarm
-ALARM_API_URL = "https://api.ukrainealarm.com/api/v3/alerts/status" 
+# ФІНАЛЬНО ВИПРАВЛЕНО: Правильний Endpoint для отримання стану
+ALARM_API_URL = "https://api.ukrainealarm.com/api/v3/alerts/state" 
 
 # Параметри для Хвилини мовчання
 KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
@@ -53,11 +53,12 @@ except Exception as e:
 current_alarm_state = None 
 last_silence_date = None 
 
-# --- ФУНКЦІЇ API МОНІТОРИНГУ ---
+# --- ФУНКЦІЇ API МОНІТОРИНГУ (ФІНАЛЬНО ВИПРАВЛЕНО) ---
 
 def get_alarm_status():
     """Отримує поточний стан тривоги, використовуючи наданий API-ключ."""
     
+    # ФІНАЛЬНО ПРАВИЛЬНИЙ ЗАГОЛОВОК ЗГІДНО SWAGGER
     headers = {
         'Authorization': UKRAINE_ALARM_API_KEY,
         'User-Agent': 'Telegram Alarm Bot (Custom Monitoring)'
@@ -66,11 +67,12 @@ def get_alarm_status():
     try:
         response = requests.get(ALARM_API_URL, headers=headers, timeout=10)
         
-        # Виправлення: Обробляємо помилки 4xx/5xx (401 Unauthorized)
-        if response.status_code >= 400:
-            logger.error(f"❌ ПОМИЛКА API {response.status_code}: Авторизація не вдалася. Повертаємо Відбій.")
-            # Якщо авторизація не вдалася, ми не можемо підтвердити тривогу. Повертаємо False.
+        # Обробляємо помилки авторизації
+        if response.status_code == 401:
+            logger.critical("❌ КЛЮЧ НЕ ПРАЦЮЄ (401 Unauthorized): Повертаємо Відбій. Необхідна заміна ключа.")
             return False 
+        
+        response.raise_for_status() # Обробляємо 403, 404, 500 тощо
         
         try:
             data = response.json()
@@ -78,14 +80,15 @@ def get_alarm_status():
             logger.error(f"Помилка декодування JSON.")
             return None
         
-        # Логіка парсингу: шукаємо активну тривогу ("activeAlerts")
+        # Очікуємо словник, шукаємо регіони у властивості 'states'
         if not isinstance(data, dict):
             logger.error("API повернув несподіваний формат даних (не словник).")
             return None
         
+        # Впевнено отримуємо список регіонів зі схеми RegionsViewModel
         regions_list = data.get('states', [])
         
-        # Перевіряємо, чи є activeAlerts непустим списком.
+        # Логіка парсингу: шукаємо активну тривогу ("activeAlerts")
         is_alarm = any(
             item.get('regionId') == TARGET_REGION_ID and item.get('activeAlerts') is not None and len(item.get('activeAlerts', [])) > 0
             for item in regions_list
@@ -94,10 +97,10 @@ def get_alarm_status():
         return is_alarm
         
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ ПОМИЛКА API (Збій з'єднання): {e}") 
+        logger.error(f"❌ ПОМИЛКА API (Збій з'єднання або інше): {e}") 
         return None
 
-# --- ФУНКЦІЇ ПУБЛІКАЦІЇ ---
+# --- ФУНКЦІЇ ПУБЛІКАЦІЇ (без змін) ---
 
 def send_photo_message(bot_instance, photo_path, caption, parse_mode='Markdown'):
     """Універсальна функція для надсилання фото з підписом."""
