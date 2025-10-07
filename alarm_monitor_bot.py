@@ -3,7 +3,7 @@ import requests
 import time
 import logging
 import os
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta
 import pytz 
 import json
 from json.decoder import JSONDecodeError
@@ -12,25 +12,22 @@ from json.decoder import JSONDecodeError
 # Змінні оточення (З Railway)
 BOT_TOKEN = str(os.environ.get("BOT_TOKEN", "")).strip()
 CHANNEL_DESTINATION = str(os.environ.get("CHANNEL_DESTINATION", "")).strip()
-
-# !!! ТИМЧАСОВЕ ПРЯМЕ ВСТАВЛЕННЯ КЛЮЧА ДЛЯ ТЕСТУВАННЯ 401 ПОМИЛКИ !!!
-# ПІСЛЯ УСПІШНОГО ЗАПУСКУ ПОВЕРНІТЬСЯ ДО: UKRAINE_ALARM_API_KEY = str(os.environ.get("UKRAINE_ALARM_API_KEY", "")).strip()
-UKRAINE_ALARM_API_KEY = "118e666b:a5a32d4802308811d9c65d9337690490"
+UKRAINE_ALARM_API_KEY = str(os.environ.get("UKRAINE_ALARM_API_KEY", "")).strip()
 
 # Шляхи до файлів зображень 
 ALARM_PHOTO_PATH = "airallert.png"
 ALL_CLEAR_PHOTO_PATH = "airallert2.png"
 SILENCE_MINUTE_PHOTO_PATH = "hvilina.png" 
 
-# Інтервал перевірки 10 секунд
-CHECK_INTERVAL = 10 
+# Інтервал перевірки 70 секунд (як ви просили)
+CHECK_INTERVAL = 70 
 
-# Цільовий регіон (Бровари - ID 684) - Оптимізовано для точнішого моніторингу
-TARGET_BROVARY_ID = "684" 
-TARGET_AREA_NAME = "Броварський район (Київська область)" 
+# ФІНАЛЬНО ВИЗНАЧЕНА ЦІЛЬ: м. БРОВАРИ (ID 684)
+TARGET_REGION_ID = "684"
+TARGET_AREA_NAME = "м. Бровари та Броварський район" 
 
-# API UkraineAlarm - Змінено на запит для конкретного регіону (Бровари - 684)
-ALARM_API_URL = f"https://api.ukrainealarm.com/api/v3/alerts/{TARGET_BROVARY_ID}" 
+# ФІНАЛЬНО ПРАВИЛЬНИЙ ENDPOINT: Прямий моніторинг за ID регіону
+ALARM_API_URL = f"https://api.ukrainealarm.com/api/v3/alerts/{TARGET_REGION_ID}" 
 
 # Параметри для Хвилини мовчання
 KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
@@ -56,44 +53,38 @@ except Exception as e:
 current_alarm_state = None 
 last_silence_date = None 
 
-# --- ФУНКЦІЇ API МОНІТОРИНГУ (ФІНАЛЬНЕ ВИПРАВЛЕННЯ АВТОРИЗАЦІЇ ТА ENDPOINT) ---
+# --- ФУНКЦІЇ API МОНІТОРИНГУ (ПРЯМИЙ МОНІТОРИНГ РАЙОНУ) ---
 
 def get_alarm_status():
-    """Отримує поточний стан тривоги для Броварів (ID 684)."""
-    
-    # Гарантуємо, що ключ для заголовка чистий
-    key_for_header = UKRAINE_ALARM_API_KEY.strip()
+    """Отримує поточний стан тривоги лише для цільового ID (Бровари)."""
     
     headers = {
-        'Authorization': f'Bearer {key_for_header}',
+        'Authorization': UKRAINE_ALARM_API_KEY, # Токен без префікса, як у вашій інструкції
         'User-Agent': 'Telegram Alarm Bot (Custom Monitoring)'
     }
     
     try:
-        # ЗАПИТ ВИКОНУЄТЬСЯ НА ALARM_API_URL = .../alerts/684
         response = requests.get(ALARM_API_URL, headers=headers, timeout=10)
         
         # Обробляємо помилки авторизації
         if response.status_code == 401:
-            logger.critical("❌ КЛЮЧ НЕ ПРАЦЮЄ (401 Unauthorized): Повертаємо None. Необхідна заміна ключа.")
-            # Повертаємо None, щоб не змінювати стан на Відбій при помилці авторизації
-            return None 
+            logger.critical("❌ КЛЮЧ НЕ ПРАЦЮЄ (401 Unauthorized): Повертаємо Відбій. Необхідна заміна ключа.")
+            return False 
         
-        response.raise_for_status() 
+        response.raise_for_status()
         
         try:
             data = response.json()
         except JSONDecodeError:
             logger.error(f"Помилка декодування JSON.")
-            return None
+            return False
         
-        # Нова логіка для endpoint'а alerts/{regionId}: повертає список активних тривог.
-        # Якщо список не пустий (len(data) > 0) - є тривога.
-        if not isinstance(data, list):
-             logger.warning("API повернув несподіваний/порожній формат даних для alerts/{regionId}.")
-             return None
-             
-        is_alarm = len(data) > 0
+        # Логіка для endpoint alerts/{regionId}:
+        # Якщо тривога активна, API повертає словник з даними тривоги. 
+        # Якщо відбій — порожній словник {} або помилку 404/204 (яка оброблена вище).
+        
+        # Якщо data є словником і він НЕ порожній, вважаємо, що тривога активна.
+        is_alarm = bool(data and isinstance(data, dict) and data.get('regionId') == TARGET_REGION_ID)
         
         return is_alarm
         
@@ -101,7 +92,7 @@ def get_alarm_status():
         logger.error(f"❌ ПОМИЛКА API (Збій з'єднання або інше): {e}") 
         return None
 
-# --- ФУНКЦІЇ ПУБЛІКАЦІЇ (без змін) ---
+# --- ФУНКЦІЇ ПУБЛІКАЦІЇ ---
 
 def send_photo_message(bot_instance, photo_path, caption, parse_mode='Markdown'):
     """Універсальна функція для надсилання фото з підписом."""
@@ -146,7 +137,7 @@ def check_and_post_silence_minute():
     if last_silence_date == today:
         return
     
-    # target_time = datetime.combine(today, SILENCE_TIME, KYIV_TIMEZONE) # Не використовується, можна видалити
+    target_time = datetime.combine(today, SILENCE_TIME, KYIV_TIMEZONE)
     
     # Вікно публікації: 8:59:00 до 9:01:00
     start_time_dt = datetime.combine(today, dt_time(8, 59), KYIV_TIMEZONE)
