@@ -3,34 +3,35 @@ import requests
 import time
 import logging
 import os
-from datetime import datetime, time as dt_time
-import pytz
+from datetime import datetime, time as dt_time, timedelta
+import pytz 
+import json
 from json.decoder import JSONDecodeError
 
 # --- КОНФІГУРАЦІЯ ПРОЄКТУ ---
-# Змінні оточення (з Railway)
+# Змінні оточення (З Railway)
 BOT_TOKEN = str(os.environ.get("BOT_TOKEN", "")).strip()
 CHANNEL_DESTINATION = str(os.environ.get("CHANNEL_DESTINATION", "")).strip()
 UKRAINE_ALARM_API_KEY = str(os.environ.get("UKRAINE_ALARM_API_KEY", "")).strip()
 
-# Шляхи до файлів зображень
+# Шляхи до файлів зображень 
 ALARM_PHOTO_PATH = "airallert.png"
 ALL_CLEAR_PHOTO_PATH = "airallert2.png"
-SILENCE_MINUTE_PHOTO_PATH = "hvilina.png"
+SILENCE_MINUTE_PHOTO_PATH = "hvilina.png" 
 
-# Інтервал перевірки 10 секунд
-CHECK_INTERVAL = 10
+# Інтервал перевірки 10 секунд (як ви просили)
+CHECK_INTERVAL = 10 
 
-# Цільовий регіон (Київська область - ID 11)
-TARGET_REGION_ID = "11"
-TARGET_AREA_NAME = "Броварський район (Київська область)"
+# ФІНАЛЬНО ВИЗНАЧЕНА ЦІЛЬ: м. БРОВАРИ (ID 684)
+TARGET_REGION_ID = "684"
+TARGET_AREA_NAME = "м. Бровари та Броварський район" 
 
-# API UkraineAlarm
-ALARM_API_URL = "https://api.ukrainealarm.com/api/v3/alerts/state"
+# ФІНАЛЬНО ПРАВИЛЬНИЙ ENDPOINT: Прямий моніторинг за ID регіону
+ALARM_API_URL = f"https://api.ukrainealarm.com/api/v3/alerts/{TARGET_REGION_ID}" 
 
 # Параметри для Хвилини мовчання
-KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv')
-SILENCE_TIME = dt_time(9, 0)
+KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
+SILENCE_TIME = dt_time(9, 0) 
 # --- КІНЕЦЬ КОНФІГУРАЦІЇ ---
 
 # КРИТИЧНА ПЕРЕВІРКА ПРИ ЗАПУСКУ
@@ -49,50 +50,46 @@ except Exception as e:
     exit(1)
 
 # Змінні стану
-current_alarm_state = None
-last_silence_date = None
+current_alarm_state = None 
+last_silence_date = None 
 
-# --- ФУНКЦІЇ API МОНІТОРИНГУ (ВИПРАВЛЕНО АВТОРИЗАЦІЮ) ---
+# --- ФУНКЦІЇ API МОНІТОРИНГУ (ПРЯМИЙ МОНІТОРИНГ РАЙОНУ) ---
 
 def get_alarm_status():
-    """Отримує поточний стан тривоги, використовуючи правильний заголовок X-API-Key."""
+    """Отримує поточний стан тривоги лише для цільового ID (Бровари)."""
     
-    # ВИПРАВЛЕНО: API вимагає заголовок 'X-API-Key', а не 'Authorization'.
     headers = {
-        'X-API-Key': UKRAINE_ALARM_API_KEY,
+        'Authorization': UKRAINE_ALARM_API_KEY, # Токен без префікса, як у вашій інструкції
         'User-Agent': 'Telegram Alarm Bot (Custom Monitoring)'
     }
     
     try:
         response = requests.get(ALARM_API_URL, headers=headers, timeout=10)
         
+        # Обробляємо помилки авторизації
         if response.status_code == 401:
-            logger.critical("❌ КЛЮЧ НЕ ПРАЦЮЄ (401 Unauthorized): Перевірте API-ключ у змінних оточення.")
-            return None # Повертаємо None, щоб уникнути помилкових сповіщень
+            logger.critical("❌ КЛЮЧ НЕ ПРАЦЮЄ (401 Unauthorized): Повертаємо Відбій. Необхідна заміна ключа.")
+            return False 
         
         response.raise_for_status()
         
         try:
             data = response.json()
         except JSONDecodeError:
-            logger.error("Помилка декодування JSON.")
-            return None
+            logger.error(f"Помилка декодування JSON.")
+            return False
         
-        if not data or not isinstance(data, dict):
-            logger.warning("API повернув несподіваний/порожній формат даних.")
-            return None
+        # Логіка для endpoint alerts/{regionId}:
+        # Якщо тривога активна, API повертає словник з даними тривоги. 
+        # Якщо відбій — порожній словник {} або помилку 404/204 (яка оброблена вище).
         
-        regions_list = data.get('states', [])
-        
-        is_alarm = any(
-            item.get('regionId') == TARGET_REGION_ID and item.get('activeAlerts') and len(item.get('activeAlerts', [])) > 0
-            for item in regions_list
-        )
+        # Якщо data є словником і він НЕ порожній, вважаємо, що тривога активна.
+        is_alarm = bool(data and isinstance(data, dict) and data.get('regionId') == TARGET_REGION_ID)
         
         return is_alarm
         
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ ПОМИЛКА API (Збій з'єднання або інше): {e}")
+        logger.error(f"❌ ПОМИЛКА API (Збій з'єднання або інше): {e}") 
         return None
 
 # --- ФУНКЦІЇ ПУБЛІКАЦІЇ ---
@@ -107,7 +104,7 @@ def send_photo_message(bot_instance, photo_path, caption, parse_mode='Markdown')
             
         with open(photo_path, 'rb') as photo:
             bot_instance.send_photo(
-                CHANNEL_DESTINATION,
+                CHANNEL_DESTINATION, 
                 photo,
                 caption=caption,
                 parse_mode=parse_mode
@@ -117,7 +114,7 @@ def send_photo_message(bot_instance, photo_path, caption, parse_mode='Markdown')
         
     except telebot.apihelper.ApiTelegramException as e:
         if "Forbidden" in str(e):
-            logger.critical("❌ ПОМИЛКА TELEGRAM API 403: БОТ НЕ Є АДМІНІСТРАТОРОМ КАНАЛУ!")
+            logger.critical("❌ ПОМИЛКА TELEGRAM API 403: БОТ НЕ Є АДМІНІСТРАТОРОМ КАНАЛУ! ВИПРАВТЕ ЦЕ ВРУЧНУ.")
         else:
             logger.error(f"Помилка Telegram API: {e}")
         return False
@@ -134,12 +131,19 @@ def check_and_post_silence_minute():
     now_kyiv = datetime.now(KYIV_TIMEZONE)
     today = now_kyiv.date()
     
-    # Перевірка, чи пост вже був сьогодні
+    if now_kyiv.hour == 8 or now_kyiv.hour == 9: 
+        logger.info(f"Kyiv Time Check: {now_kyiv.strftime('%H:%M:%S')}. Last posted: {last_silence_date}")
+        
     if last_silence_date == today:
         return
     
-    # Публікуємо, якщо час 9:00
-    if now_kyiv.time().hour == SILENCE_TIME.hour and now_kyiv.time().minute == SILENCE_TIME.minute:
+    target_time = datetime.combine(today, SILENCE_TIME, KYIV_TIMEZONE)
+    
+    # Вікно публікації: 8:59:00 до 9:01:00
+    start_time_dt = datetime.combine(today, dt_time(8, 59), KYIV_TIMEZONE)
+    end_time_dt = datetime.combine(today, dt_time(9, 1), KYIV_TIMEZONE)
+    
+    if start_time_dt <= now_kyiv < end_time_dt:
         logger.warning(f"Настав час Хвилини мовчання. Київський час: {now_kyiv.strftime('%H:%M:%S')}. Публікація...")
         
         caption = "🇺🇦 **ХВИЛИНА МОВЧАННЯ** 🇺🇦\n\nЩоденно вшановуємо пам'ять українців, які загинули внаслідок збройної агресії Російської Федерації."
@@ -147,7 +151,8 @@ def check_and_post_silence_minute():
         success = send_photo_message(bot, SILENCE_MINUTE_PHOTO_PATH, caption)
         
         if success:
-            last_silence_date = today
+            last_silence_date = today 
+
 
 def check_and_post_alarm(new_alarm_state):
     """Обробляє логіку зміни стану тривоги та публікує повідомлення."""
@@ -160,6 +165,7 @@ def check_and_post_alarm(new_alarm_state):
         return
         
     if new_alarm_state != current_alarm_state:
+        
         if new_alarm_state is True:
             logger.warning("ЗМІНА СТАНУ: ТРИВОГА!")
             caption = f"🚨 **УВАГА! ПОВІТРЯНА ТРИВОГА!** 🚨\n\n**{TARGET_AREA_NAME}**\n\n\n**Терміново прямуйте до найближчого укриття!**"
@@ -171,22 +177,21 @@ def check_and_post_alarm(new_alarm_state):
         
         current_alarm_state = new_alarm_state
 
+
 # --- ГОЛОВНИЙ ЦИКЛ МОНІТОРИНГУ ---
 def start_monitoring():
     """Запускає нескінченний цикл перевірки стану."""
+    
     logger.warning("Бот моніторингу запущено...")
+    
     while True:
-        try:
-            check_and_post_silence_minute()
-            
-            new_alarm_state = get_alarm_status()
-            
-            if new_alarm_state is not None:
-                check_and_post_alarm(new_alarm_state)
+        check_and_post_silence_minute()
+        
+        new_alarm_state = get_alarm_status()
+        
+        if new_alarm_state is not None:
+            check_and_post_alarm(new_alarm_state)
 
-        except Exception as e:
-            logger.error(f"Сталася помилка в головному циклі: {e}")
-            
         time.sleep(CHECK_INTERVAL)
 
 # --- ЗАПУСК ---
@@ -194,4 +199,4 @@ if __name__ == "__main__":
     try:
         start_monitoring()
     except Exception as e:
-        logger.critical(f"Критична помилка виконання: {e}")
+        logger.critical(f"Критична помибка виконання: {e}")
