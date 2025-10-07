@@ -14,20 +14,20 @@ BOT_TOKEN = str(os.environ.get("BOT_TOKEN", "")).strip()
 CHANNEL_DESTINATION = str(os.environ.get("CHANNEL_DESTINATION", "")).strip()
 UKRAINE_ALARM_API_KEY = str(os.environ.get("UKRAINE_ALARM_API_KEY", "")).strip()
 
-# Шляхи до файлів зображень (мають лежати поруч зі скриптом)
+# Шляхи до файлів зображень
 ALARM_PHOTO_PATH = "airallert.png"
 ALL_CLEAR_PHOTO_PATH = "airallert2.png"
 SILENCE_MINUTE_PHOTO_PATH = "hvilina.png" 
 
-# Інтервал перевірки 60 секунд (1 хвилина)
-CHECK_INTERVAL = 60 
+# ВИПРАВЛЕНО: Інтервал перевірки 10 секунд
+CHECK_INTERVAL = 10 
 
 # Цільовий регіон (Київська область - ID 11)
 TARGET_REGION_ID = "11"
 TARGET_AREA_NAME = "Броварський район (Київська область)" 
 
-# НОВЕ ВИПРАВЛЕННЯ: Змінено endpoint на загальний список активних тривог
-ALARM_API_URL = "https://api.ukrainealarm.com/api/v3/alerts" 
+# API UkraineAlarm
+ALARM_API_URL = "https://api.ukrainealarm.com/api/v3/alerts/status" 
 
 # Параметри для Хвилини мовчання
 KYIV_TIMEZONE = pytz.timezone('Europe/Kyiv') 
@@ -53,10 +53,10 @@ except Exception as e:
 current_alarm_state = None 
 last_silence_date = None 
 
-# --- ФУНКЦІЇ API МОНІТОРИНГУ ---
+# --- ФУНКЦІЇ API МОНІТОРИНГУ (МАКСИМАЛЬНА СТІЙКІСТЬ) ---
 
 def get_alarm_status():
-    """Отримує поточний стан тривоги з API, що повертає список активних тривог."""
+    """Отримує поточний стан тривоги, використовуючи наданий API-ключ."""
     
     headers = {
         'Authorization': UKRAINE_ALARM_API_KEY,
@@ -73,24 +73,30 @@ def get_alarm_status():
             logger.error(f"Помилка декодування JSON.")
             return None
         
-        # ЛОГІКА ПАРСИНГУ: Очікуємо список (list) активних тривог (не словник з 'states')
-        if not isinstance(data, list):
-            logger.error("API повернув несподіваний формат даних (не список активних тривог).")
+        if not isinstance(data, dict):
+            logger.error("API повернув несподіваний формат даних (не словник).")
             return None
+        
+        # Отримуємо список регіонів з ключа 'states'
+        regions_list = data.get('states', [])
+        
+        if not regions_list:
+            logger.warning("API повернув порожній список регіонів або відсутній ключ 'states'.")
+            return False # Вважаємо відбоєм, якщо API не може підтвердити тривогу
 
-        # Перевіряємо, чи є в списку активних тривог наш регіон
+        # ФІНАЛЬНЕ ВИПРАВЛЕННЯ ЛОГІКИ: Перевіряємо, чи є activeAlerts непустим списком.
         is_alarm = any(
-            item.get('regionId') == TARGET_REGION_ID
-            for item in data
+            item.get('regionId') == TARGET_REGION_ID and item.get('activeAlerts') is not None and len(item.get('activeAlerts', [])) > 0
+            for item in regions_list
         )
         
         return is_alarm
         
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ ПОМИЛКА API (Перевірте ключ або 401 Unauthorized): {e}") 
+        logger.error(f"❌ ПОМИЛКА API (Збій під час тривоги?): {e}") 
         return None
 
-# --- ФУНКЦІЇ ПУБЛІКАЦІЇ (без змін) ---
+# --- ФУНКЦІЇ ПУБЛІКАЦІЇ ---
 
 def send_photo_message(bot_instance, photo_path, caption, parse_mode='Markdown'):
     """Універсальна функція для надсилання фото з підписом."""
@@ -120,7 +126,7 @@ def send_photo_message(bot_instance, photo_path, caption, parse_mode='Markdown')
         logger.error(f"Невідома помилка при надсиланні: {e}")
         return False
 
-# --- ЛОГІКА ХВИЛИНИ МОВЧАННЯ (без змін) ---
+# --- ЛОГІКА ХВИЛИНИ МОВЧАННЯ ---
 
 def check_and_post_silence_minute():
     """Публікує Хвилину мовчання рівно о 9:00 за Києвом, лише один раз на день."""
