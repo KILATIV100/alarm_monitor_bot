@@ -1,4 +1,4 @@
-import telebot
+import telebotяяяя
 import requests
 import time
 import logging
