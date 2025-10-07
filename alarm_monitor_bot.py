@@ -14,12 +14,12 @@ BOT_TOKEN = str(os.environ.get("BOT_TOKEN", "")).strip()
 CHANNEL_DESTINATION = str(os.environ.get("CHANNEL_DESTINATION", "")).strip()
 UKRAINE_ALARM_API_KEY = str(os.environ.get("UKRAINE_ALARM_API_KEY", "")).strip()
 
-# Шляхи до файлів зображень
+# Шляхи до файлів зображень (мають лежати поруч зі скриптом)
 ALARM_PHOTO_PATH = "airallert.png"
 ALL_CLEAR_PHOTO_PATH = "airallert2.png"
 SILENCE_MINUTE_PHOTO_PATH = "hvilina.png" 
 
-# ВИПРАВЛЕНО: Інтервал перевірки 10 секунд
+# Інтервал перевірки 10 секунд
 CHECK_INTERVAL = 10 
 
 # Цільовий регіон (Київська область - ID 11)
@@ -53,7 +53,7 @@ except Exception as e:
 current_alarm_state = None 
 last_silence_date = None 
 
-# --- ФУНКЦІЇ API МОНІТОРИНГУ (МАКСИМАЛЬНА СТІЙКІСТЬ) ---
+# --- ФУНКЦІЇ API МОНІТОРИНГУ ---
 
 def get_alarm_status():
     """Отримує поточний стан тривоги, використовуючи наданий API-ключ."""
@@ -65,7 +65,12 @@ def get_alarm_status():
     
     try:
         response = requests.get(ALARM_API_URL, headers=headers, timeout=10)
-        response.raise_for_status() 
+        
+        # Виправлення: Обробляємо помилки 4xx/5xx (401 Unauthorized)
+        if response.status_code >= 400:
+            logger.error(f"❌ ПОМИЛКА API {response.status_code}: Авторизація не вдалася. Повертаємо Відбій.")
+            # Якщо авторизація не вдалася, ми не можемо підтвердити тривогу. Повертаємо False.
+            return False 
         
         try:
             data = response.json()
@@ -73,18 +78,14 @@ def get_alarm_status():
             logger.error(f"Помилка декодування JSON.")
             return None
         
+        # Логіка парсингу: шукаємо активну тривогу ("activeAlerts")
         if not isinstance(data, dict):
             logger.error("API повернув несподіваний формат даних (не словник).")
             return None
         
-        # Отримуємо список регіонів з ключа 'states'
         regions_list = data.get('states', [])
         
-        if not regions_list:
-            logger.warning("API повернув порожній список регіонів або відсутній ключ 'states'.")
-            return False # Вважаємо відбоєм, якщо API не може підтвердити тривогу
-
-        # ФІНАЛЬНЕ ВИПРАВЛЕННЯ ЛОГІКИ: Перевіряємо, чи є activeAlerts непустим списком.
+        # Перевіряємо, чи є activeAlerts непустим списком.
         is_alarm = any(
             item.get('regionId') == TARGET_REGION_ID and item.get('activeAlerts') is not None and len(item.get('activeAlerts', [])) > 0
             for item in regions_list
@@ -93,7 +94,7 @@ def get_alarm_status():
         return is_alarm
         
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ ПОМИЛКА API (Збій під час тривоги?): {e}") 
+        logger.error(f"❌ ПОМИЛКА API (Збій з'єднання): {e}") 
         return None
 
 # --- ФУНКЦІЇ ПУБЛІКАЦІЇ ---
@@ -135,7 +136,6 @@ def check_and_post_silence_minute():
     now_kyiv = datetime.now(KYIV_TIMEZONE)
     today = now_kyiv.date()
     
-    # Діагностика часу
     if now_kyiv.hour == 8 or now_kyiv.hour == 9: 
         logger.info(f"Kyiv Time Check: {now_kyiv.strftime('%H:%M:%S')}. Last posted: {last_silence_date}")
         
