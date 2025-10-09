@@ -1,4 +1,4 @@
-import telebot
+import telebot1
 import requests
 import time
 import logging
